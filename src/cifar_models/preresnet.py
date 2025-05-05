@@ -70,14 +70,23 @@ class ResNetBase(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x, targets=None, jsd=0, mixup_alpha=0.0, manifold_mixup=0, 
-                add_noise_level=0.0, mult_noise_level=0.0, sparse_level=1.0):
-           
-        k = 0 if mixup_alpha > 0.0 else -1
-        if mixup_alpha > 0.0 and manifold_mixup == True: 
-            k = np.random.choice(range(len(self.blocks)), 1)[0]
+                add_noise_level=0.0, mult_noise_level=0.0, sparse_level=1.0, numpy_gen=None, torch_gen=None):
         
+        if mixup_alpha > 0.0:
+            k = 0
+            if torch_gen is None:
+                torch_gen = torch.Generator(device='cuda')
+            if numpy_gen is None:
+                numpy_gen = np.random.default_rng()
+        else:
+            k = -1
+
+
+        if mixup_alpha > 0.0 and manifold_mixup == True: 
+            k = numpy_gen.choice(range(len(self.blocks)), 1)[0]
         if k == 0: # Do input mixup if k is 0 
-          x, targets_a, targets_b, lam = do_noisy_mixup(x, targets, jsd=jsd, alpha=mixup_alpha, 
+          # Clone is necessary for KD because otherwise the original images are modified in place!
+          x, targets_a, targets_b, lam = do_noisy_mixup(x.clone(), targets, numpy_gen, torch_gen, jsd=jsd, alpha=mixup_alpha, 
                                               add_noise_level=add_noise_level, 
                                               mult_noise_level=mult_noise_level,
                                               sparse_level=sparse_level)
@@ -87,10 +96,13 @@ class ResNetBase(nn.Module):
         for i, ResidualBlock in enumerate(self.blocks):
             out = ResidualBlock(out)
             if k == (i+1): # Do manifold mixup if k is greater 0
-                out, targets_a, targets_b, lam = do_noisy_mixup(out, targets, jsd=jsd, alpha=mixup_alpha, 
+                out, targets_a, targets_b, lam = do_noisy_mixup(out, targets, numpy_gen, torch_gen, jsd=jsd, alpha=mixup_alpha, 
                                            add_noise_level=add_noise_level, 
                                            mult_noise_level=mult_noise_level,
                                            sparse_level=sparse_level)
+                
+        if hasattr(self, "bn1"): # For WideResNet28
+            out = F.relu(self.bn1(out))
                 
         out = F.avg_pool2d(out, out.size(dim=3)) # 4 for the normal models
         out = out.view(out.size(0), -1)

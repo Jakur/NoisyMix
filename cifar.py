@@ -6,11 +6,13 @@ This code is based on the following two repositories
 
 import argparse
 import os
+from copy import deepcopy
 
 import augmentations
 import numpy as np
 
 from src.cifar_models import preactwideresnet18, preactresnet18, wideresnet28, preactresnet20, preactresnet32
+from kd_utils import DistillKL, freeze
 
 
 import torch
@@ -52,7 +54,27 @@ parser.add_argument('--add_noise_level', type=float, default=0.0, metavar='S', h
 parser.add_argument('--mult_noise_level', type=float, default=0.0, metavar='S', help='level of multiplicative noise')
 parser.add_argument('--sparse_level', type=float, default=0.0, metavar='S', help='sparse noise')
 
+# Distillation 
+parser.add_argument('--distill', action='store_true', help="Enable distillation")
+parser.add_argument('--teacher-path', type=str, help="Path to PyTorch saved model")
+parser.add_argument('--reward', '-r', type=float, default=1.0, help="Weight for primary (non-distillation) loss function")
+parser.add_argument('--kd_alpha', '-a', type=float, default=0.0, help="Weight for Standard KD")
+parser.add_argument('--kd_temp', type=float, default=4.0, help="Temperature parameter for knowledge distillation")
+
 args = parser.parse_args()
+
+if args.seed != 0:
+  numpy_rng = np.random.default_rng(args.seed)
+  torch_rng = torch.Generator(device="cuda").manual_seed(args.seed)
+else:
+  numpy_rng = np.random.default_rng()
+  torch_rng = torch.Generator(device="cuda")
+
+if args.distill:
+    teacher_net = torch.load(args.teacher_path)
+    teacher_net.eval()
+    freeze(teacher_net)
+
 
 def train(net, train_loader, optimizer, scheduler):
   """Train for one epoch."""
@@ -87,23 +109,60 @@ def train(net, train_loader, optimizer, scheduler):
     elif args.jsd == 1:
       images_all = torch.cat(images, 0).cuda()
       targets = targets.cuda()      
+
+      torch_rng_backup = torch.Generator(device="cuda").set_state(torch_rng.get_state())
+      numpy_rng_backup = deepcopy(numpy_rng)
       
       if args.alpha == 0.0:   
             logits_all = net(images_all)
       else:
             logits_all, targets_a, targets_b, lam = net(images_all, targets=targets, jsd=args.jsd, 
-                                                        mixup_alpha=args.alpha,
+                                                      numpy_gen=numpy_rng,
+                                                      torch_gen=torch_rng,
+                                                      mixup_alpha=args.alpha,
                                                       manifold_mixup=args.manifold_mixup,
                                                       add_noise_level=args.add_noise_level,
                                                       mult_noise_level=args.mult_noise_level,
                                                       sparse_level=args.sparse_level)
-        
+      
+      num_images = images[0].size(0)
+      logits_clean, logits_aug1, logits_aug2 = torch.split(logits_all, num_images)
       if args.alpha>0:
-          logits_clean, logits_aug1, logits_aug2 = torch.split(logits_all, images[0].size(0))
           loss = mixup_criterion(criterion, logits_clean, targets_a, targets_b, lam)
       else:
-          logits_clean, logits_aug1, logits_aug2 = torch.split(logits_all, images[0].size(0))
-          loss = criterion(logits_clean, targets)         
+          loss = criterion(logits_clean, targets) 
+
+      if args.distill:
+          # loss *= args.reward
+          with torch.no_grad():
+            if args.alpha == 0:
+                t_logits_all = teacher_net(images_all)
+            else:
+              t_logits_all, t_targets_a, t_targets_b, t_lam = teacher_net(images_all, targets=targets, jsd=args.jsd, 
+                                              numpy_gen=numpy_rng_backup,
+                                              torch_gen=torch_rng_backup,
+                                              mixup_alpha=args.alpha,
+                                              manifold_mixup=args.manifold_mixup,
+                                              add_noise_level=args.add_noise_level,
+                                              mult_noise_level=args.mult_noise_level,
+                                              sparse_level=args.sparse_level)
+            t_logits_clean, t_logits_aug1, t_logits_aug2 = torch.split(t_logits_all, num_images)
+          # with torch.no_grad():
+          #   if args.alpha != 0:
+          #     assert(torch.allclose(t_targets_a, targets_a))
+          # print(t_logits_clean)
+
+          # print(logits_clean)
+
+          if args.kd_alpha > 0.0:
+              distill_loss_fn = DistillKL(args.kd_temp)
+              kd_loss1 = distill_loss_fn(logits_clean, t_logits_clean.detach())
+              kd_loss2 = distill_loss_fn(logits_aug1, t_logits_aug1.detach())
+              kd_loss3 = distill_loss_fn(logits_aug2, t_logits_aug2.detach())
+              kd_loss = kd_loss1 + kd_loss2 + kd_loss3
+              # kd_loss = kd_loss1
+          else:
+              kd_loss = 0.0   
       
       # JSD Loss
 
@@ -118,6 +177,7 @@ def train(net, train_loader, optimizer, scheduler):
       loss += 12 * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
                     F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
                     F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
+      loss = args.kd_alpha * kd_loss + args.reward * loss
 
     loss.backward()
     optimizer.step()
@@ -207,8 +267,8 @@ def main():
           args.learning_rate, momentum=args.momentum,
           weight_decay=args.decay, nesterov=True)
     
-      # Distribute model across all visible GPUs
-      net = torch.nn.DataParallel(net).cuda()
+      net = net.cuda()
+      # net = torch.nn.DataParallel(net).cuda() # Distribute across all GPUs
       #cudnn.benchmark = True
     
       start_epoch = 0
