@@ -10,7 +10,7 @@ import os
 import augmentations
 import numpy as np
 
-from src.cifar_models import preactwideresnet18, preactresnet18, wideresnet28
+from src.cifar_models import preactwideresnet18, preactresnet18, wideresnet28, preactresnet20, preactresnet32
 
 
 import torch
@@ -25,7 +25,7 @@ from aug_utils import *
 parser = argparse.ArgumentParser(description='Trains a CIFAR Classifier', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'], help='Choose between CIFAR-10, CIFAR-100.')
 parser.add_argument('--arch', '-m', type=str, default='preactresnet18',
-    choices=['preactresnet18', 'preactwideresnet18', 'wideresnet28'], help='Choose architecture.')
+    choices=['preactresnet18', 'preactwideresnet18', 'wideresnet28', 'preactresnet20', 'preactresnet32'], help='Choose architecture.')
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 0)')
 
 # Optimization options
@@ -198,6 +198,10 @@ def main():
         net = preactwideresnet18(num_classes=num_classes)
       elif args.arch == 'wideresnet28':
           net = wideresnet28(num_classes=num_classes)
+      elif args.arch == "preactresnet20":
+        net = preactresnet20(num_classes=num_classes)
+      elif args.arch == "preactresnet32":
+        net = preactresnet32(num_classes=num_classes)
     
       optimizer = torch.optim.SGD(net.parameters(),
           args.learning_rate, momentum=args.momentum,

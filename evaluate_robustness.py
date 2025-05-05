@@ -105,6 +105,12 @@ def get_calibration(data_loader, model, debug=False, n_bins=None):
 
     return ece
 
+def get_parameter_count(model: torch.nn.Module):
+    total = 0
+    for name, param in model.named_parameters():
+        total += param.numel()
+    return total
+
 
 def evaluate(folder, dataset, save_dir):
 
@@ -122,6 +128,7 @@ def evaluate(folder, dataset, save_dir):
         model = torch.load(folder + m)
         print(m)
         model.eval()
+        print(f"Number of Parameters: {get_parameter_count(model)}")
         
         # Clean Accuracy
         clean_test_acc = cls_validate(test_loader_clean, model, time_begin=None)

@@ -42,4 +42,7 @@ def lr_scheduler(epoch, optimizer, decay_eff=0.1, decayEpoch=[]):
         
 def get_lr(step, total_steps, lr_max, lr_min):
   """Compute learning rate according to cosine annealing schedule."""
-  return lr_min + (lr_max - lr_min) * 0.5 * (1 + np.cos(step / total_steps * np.pi))
+  if step < 100:
+    return lr_max / 10
+  else:
+    return lr_min + (lr_max - lr_min) * 0.5 * (1 + np.cos(step / total_steps * np.pi))

@@ -28,7 +28,7 @@ def do_noisy_mixup(x, y, jsd=0, alpha=0.0, add_noise_level=0.0, mult_noise_level
         x = _noise(x, add_noise_level=add_noise_level, mult_noise_level=mult_noise_level, sparse_level=sparse_level)
     else:
         kk = 0
-        q = np.int(x.shape[0]/3)
+        q = int(x.shape[0]/3)
         index = torch.randperm(q).cuda()
     
         for i in range(1,4):

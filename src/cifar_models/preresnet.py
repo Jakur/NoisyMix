@@ -56,21 +56,10 @@ class PreActBottleneck(nn.Module):
         out = self.conv3(F.relu(self.bn3(out)))
         out += shortcut
         return out
-
-class PreActResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10, width=1):
-        super(PreActResNet, self).__init__()
-        
-        widths = [int(w * width) for w in [64, 128, 256, 512]]
-        
-        self.in_planes = widths[0]
-        self.conv1 = nn.Conv2d(3, self.in_planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.layer1 = self._make_layer(block, widths[0], num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, widths[1], num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, widths[2], num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, widths[3], num_blocks[3], stride=2)
-        self.linear = nn.Linear(widths[3]*block.expansion, num_classes)
-        self.blocks = [self.layer1, self.layer2, self.layer3, self.layer4]
+    
+class ResNetBase(nn.Module):
+    def __init__(self):
+        super().__init__()
 
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1]*(num_blocks-1)
@@ -84,7 +73,8 @@ class PreActResNet(nn.Module):
                 add_noise_level=0.0, mult_noise_level=0.0, sparse_level=1.0):
            
         k = 0 if mixup_alpha > 0.0 else -1
-        if mixup_alpha > 0.0 and manifold_mixup == True: k = np.random.choice(range(4), 1)[0]
+        if mixup_alpha > 0.0 and manifold_mixup == True: 
+            k = np.random.choice(range(len(self.blocks)), 1)[0]
         
         if k == 0: # Do input mixup if k is 0 
           x, targets_a, targets_b, lam = do_noisy_mixup(x, targets, jsd=jsd, alpha=mixup_alpha, 
@@ -101,8 +91,8 @@ class PreActResNet(nn.Module):
                                            add_noise_level=add_noise_level, 
                                            mult_noise_level=mult_noise_level,
                                            sparse_level=sparse_level)
-
-        out = F.avg_pool2d(out, 4)
+                
+        out = F.avg_pool2d(out, out.size(dim=3)) # 4 for the normal models
         out = out.view(out.size(0), -1)
         out = self.linear(out)
         
@@ -110,7 +100,42 @@ class PreActResNet(nn.Module):
             return out, targets_a, targets_b, lam
         else:
             return out
+    
 
+class PreActResNet(ResNetBase):
+    def __init__(self, block, num_blocks, num_classes=10, width=1):
+        super(PreActResNet, self).__init__()
+        
+        widths = [int(w * width) for w in [64, 128, 256, 512]]
+        
+        self.in_planes = widths[0]
+        self.conv1 = nn.Conv2d(3, self.in_planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.layer1 = self._make_layer(block, widths[0], num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, widths[1], num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, widths[2], num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, widths[3], num_blocks[3], stride=2)
+        self.linear = nn.Linear(widths[3]*block.expansion, num_classes)
+        self.blocks = [self.layer1, self.layer2, self.layer3, self.layer4]
+
+class SmallPreActResNet(ResNetBase):
+    def __init__(self, block, num_blocks, num_classes=10, width=1):
+        super().__init__()
+        
+        widths = [int(w * width) for w in [16, 32, 64]]
+        
+        self.in_planes = widths[0]
+        self.conv1 = nn.Conv2d(3, self.in_planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.layer1 = self._make_layer(block, widths[0], num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, widths[1], num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, widths[2], num_blocks[2], stride=2)
+        self.linear = nn.Linear(widths[-1]*block.expansion, num_classes)
+        self.blocks = [self.layer1, self.layer2, self.layer3]
+
+def PreActResNet20(**kwargs):
+    return SmallPreActResNet(PreActBlock, [3, 3, 3], **kwargs)
+
+def PreActResNet32(**kwargs):
+    return SmallPreActResNet(PreActBlock, [5, 5, 5], **kwargs)
 
 def PreActResNet18(**kwargs):
     return PreActResNet(PreActBlock, [2,2,2,2], **kwargs)
@@ -124,6 +149,8 @@ def PreActResNet34(**kwargs):
 preactresnet18 = PreActResNet18
 preactwideresnet18 = PreActWideResNet18
 preactresnet34 = PreActResNet34
+preactresnet20 = PreActResNet20
+preactresnet32 = PreActResNet32
 
 def test():
     net = PreActResNet18()
