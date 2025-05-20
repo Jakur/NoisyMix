@@ -75,6 +75,14 @@ if args.distill:
     teacher_net.eval()
     freeze(teacher_net)
 
+def get_mix(logits_all, num_images):
+  t_logits_clean, t_logits_aug1, t_logits_aug2 = torch.split(logits_all, num_images)
+  t_p_clean, t_p_aug1, t_p_aug2 = F.softmax(
+  t_logits_clean, dim=1), F.softmax(
+      t_logits_aug1, dim=1), F.softmax(
+          t_logits_aug2, dim=1)
+  t_p_mixture = torch.clamp((t_p_clean + t_p_aug1 + t_p_aug2) / 3., 1e-7, 1).log()
+  return t_p_mixture
 
 def train(net, train_loader, optimizer, scheduler):
   """Train for one epoch."""
@@ -146,7 +154,8 @@ def train(net, train_loader, optimizer, scheduler):
                                               add_noise_level=args.add_noise_level,
                                               mult_noise_level=args.mult_noise_level,
                                               sparse_level=args.sparse_level)
-            t_logits_clean, t_logits_aug1, t_logits_aug2 = torch.split(t_logits_all, num_images)
+            
+            t_p_mixture = get_mix(t_logits_all, num_images)
           # with torch.no_grad():
           #   if args.alpha != 0:
           #     assert(torch.allclose(t_targets_a, targets_a))
@@ -154,15 +163,15 @@ def train(net, train_loader, optimizer, scheduler):
 
           # print(logits_clean)
 
-          if args.kd_alpha > 0.0:
-              distill_loss_fn = DistillKL(args.kd_temp)
-              kd_loss1 = distill_loss_fn(logits_clean, t_logits_clean.detach())
-              kd_loss2 = distill_loss_fn(logits_aug1, t_logits_aug1.detach())
-              kd_loss3 = distill_loss_fn(logits_aug2, t_logits_aug2.detach())
-              kd_loss = kd_loss1 + kd_loss2 + kd_loss3
-              # kd_loss = kd_loss1
-          else:
-              kd_loss = 0.0   
+          # if args.kd_alpha > 0.0:
+          #     distill_loss_fn = DistillKL(args.kd_temp)
+          #     kd_loss1 = distill_loss_fn(logits_clean, t_logits_clean.detach())
+          #     kd_loss2 = distill_loss_fn(logits_aug1, t_logits_aug1.detach())
+          #     kd_loss3 = distill_loss_fn(logits_aug2, t_logits_aug2.detach())
+          #     kd_loss = kd_loss1 + kd_loss2 + kd_loss3
+          #     # kd_loss = kd_loss1
+          # else:
+          #     kd_loss = 0.0   
       
       # JSD Loss
 
@@ -172,12 +181,15 @@ def train(net, train_loader, optimizer, scheduler):
                   logits_aug2, dim=1)
                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
-      p_mixture = torch.clamp((p_clean + p_aug1 + p_aug2) / 3., 1e-7, 1).log()
+      if args.distill:
+        p_mixture = t_p_mixture
+      else:                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+        p_mixture = torch.clamp((p_clean + p_aug1 + p_aug2) / 3., 1e-7, 1).log()
+
       loss += 12 * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
                     F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
                     F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
-      loss = args.kd_alpha * kd_loss + args.reward * loss
+      # loss = args.kd_alpha * kd_loss + args.reward * loss
 
     loss.backward()
     optimizer.step()
