@@ -32,6 +32,7 @@ parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10'
 parser.add_argument('--arch', '-m', type=str, default='preactresnet18',
     choices=['preactresnet18', 'preactwideresnet18', 'wideresnet28', 'preactresnet20', 'preactresnet32'], help='Choose architecture.')
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 0)')
+parser.add_argument('--workers', type=int, default=4, help="Number of workers for PyTorch DataLoaders")
 
 # Optimization options
 parser.add_argument('--epochs', '-e', type=int, default=200, help='Number of epochs to train.')
@@ -281,11 +282,11 @@ def main():
       
       train_loader = torch.utils.data.DataLoader(
               train_data, batch_size=args.train_batch_size,
-              shuffle=True, num_workers=4, pin_memory=True)          
+              shuffle=True, num_workers=args.workers, pin_memory=True)          
     
       test_loader = torch.utils.data.DataLoader(
           test_data, batch_size=args.test_batch_size,
-          shuffle=False, num_workers=4, pin_memory=True)
+          shuffle=False, num_workers=args.workers, pin_memory=True)
     
       # Create model
       if args.arch == 'preactresnet18':
