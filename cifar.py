@@ -204,14 +204,14 @@ def train(net, train_loader, optimizer, scheduler, epoch=0):
                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
       if args.distill:
-        alpha = kd_schedule(epoch, args.epochs, 0.0, args.kd_alpha)
-        assert(0.0 <= alpha and alpha <= 1.0)
-        reward = 1.0 - alpha
-        p_mixture = alpha * t_p_mixture + reward * torch.clamp((p_clean + p_aug1 + p_aug2) / 3., 1e-7, 1).log()
+        p_mixture = t_p_mixture
       else:                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
         p_mixture = torch.clamp((p_clean + p_aug1 + p_aug2) / 3., 1e-7, 1).log()
-
-      loss += 12 * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
+      if args.distill:
+          scale_jsd = kd_schedule(epoch, args.epochs, 0.0, args.kd_alpha)
+      else:
+          scale_jsd = 12
+      loss += scale_jsd * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
                     F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
                     F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
       # loss = args.kd_alpha * kd_loss + args.reward * loss
