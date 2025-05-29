@@ -62,7 +62,7 @@ parser.add_argument('--sparse_level', type=float, default=0.0, metavar='S', help
 parser.add_argument('--distill', action='store_true', help="Enable distillation")
 parser.add_argument('--teacher-path', type=str, help="Path to PyTorch saved model")
 parser.add_argument('--kd_alpha', '-a', type=float, default=0.0, help="Final weight for Standard KD (0-1)")
-parser.add_argument('--kd_schedule', type=str, default="linear", choices=["linear", "log", "cos"])
+parser.add_argument('--kd_schedule', type=str, default="const", choices=["linear", "log", "cos", "const"])
 parser.add_argument('--kd_temp', type=float, default=4.0, help="Temperature parameter for knowledge distillation")
 
 start_time = int(time.time())
@@ -106,18 +106,20 @@ if args.distill:
     elif args.kd_schedule == "cos":
         print("Cosine KD Scaling")
         kd_schedule = cosine_param_schedule
-    else:
+    elif args.kd_schedule == "linear":
         print("Linear KD Scaling")
         kd_schedule = linear_param_schedule
+    else:
+        print("Constant KD Scaling")
+        kd_schedule = lambda _a, _b, _c, d: d
 
-def get_mix(logits_all, num_images):
+def get_probs(logits_all, num_images):
   t_logits_clean, t_logits_aug1, t_logits_aug2 = torch.split(logits_all, num_images)
   t_p_clean, t_p_aug1, t_p_aug2 = F.softmax(
   t_logits_clean, dim=1), F.softmax(
       t_logits_aug1, dim=1), F.softmax(
           t_logits_aug2, dim=1)
-  t_p_mixture = torch.clamp((t_p_clean + t_p_aug1 + t_p_aug2) / 3., 1e-7, 1).log()
-  return t_p_mixture
+  return t_p_clean, t_p_aug1, t_p_aug2
 
 def train(net, train_loader, optimizer, scheduler, epoch=0):
   """Train for one epoch."""
@@ -190,7 +192,7 @@ def train(net, train_loader, optimizer, scheduler, epoch=0):
                                               mult_noise_level=args.mult_noise_level,
                                               sparse_level=args.sparse_level)
             
-            t_p_mixture = get_mix(t_logits_all, num_images)
+            t_logits_clean, t_logits_aug1, t_logits_aug2 = torch.split(logits_all, num_images)
           # with torch.no_grad():
           #   if args.alpha != 0:
           #     assert(torch.allclose(t_targets_a, targets_a))
@@ -204,16 +206,17 @@ def train(net, train_loader, optimizer, scheduler, epoch=0):
                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
       if args.distill:
-        p_mixture = t_p_mixture
+        kd_loss_fn = DistillKL(args.kd_temp)
+        alpha = kd_schedule(epoch, args.epochs, 0.0, args.kd_alpha)
+        alpha = args.kd_alpha
+        loss += alpha * (kd_loss_fn(t_logits_clean, logits_clean) + kd_loss_fn(t_logits_aug1, logits_aug1) + 
+                         kd_loss_fn(t_logits_aug2, logits_aug2))
+
       else:                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
         p_mixture = torch.clamp((p_clean + p_aug1 + p_aug2) / 3., 1e-7, 1).log()
-      if args.distill:
-          scale_jsd = kd_schedule(epoch, args.epochs, 0.0, args.kd_alpha)
-      else:
-          scale_jsd = 12
-      loss += scale_jsd * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
-                    F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
-                    F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
+        loss += 12 * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
+                      F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
+                      F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
       # loss = args.kd_alpha * kd_loss + args.reward * loss
 
     loss.backward()
