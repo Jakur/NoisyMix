@@ -6,13 +6,13 @@ def _noise(x, numpy_gen: np.random.Generator, torch_gen: torch.Generator, add_no
     mult_noise = 1.0
     with torch.cuda.device(0):
         if add_noise_level > 0.0:
-            add_noise = add_noise_level * numpy_gen.beta(2, 5) * torch.cuda.FloatTensor(x.shape).normal_(generator=torch_gen)
+            add_noise = add_noise_level * numpy_gen.beta(2, 5) * torch.empty(x.shape, dtype=torch.float, device="cuda").normal_(generator=torch_gen)
             #torch.clamp(add_noise, min=-(2*var), max=(2*var), out=add_noise) # clamp
-            sparse = torch.cuda.FloatTensor(x.shape).uniform_(generator=torch_gen)
+            sparse = torch.empty(x.shape, dtype=torch.float, device="cuda").uniform_(generator=torch_gen)
             add_noise[sparse<sparse_level] = 0
         if mult_noise_level > 0.0:
-            mult_noise = mult_noise_level * numpy_gen.beta(2, 5) * (2*torch.cuda.FloatTensor(x.shape).uniform_(generator=torch_gen)-1) + 1 
-            sparse = torch.cuda.FloatTensor(x.shape).uniform_(generator=torch_gen)
+            mult_noise = mult_noise_level * numpy_gen.beta(2, 5) * (2*torch.empty(x.shape, dtype=torch.float, device="cuda").uniform_(generator=torch_gen)-1) + 1 
+            sparse = torch.empty(x.shape, dtype=torch.float, device="cuda").uniform_(generator=torch_gen)
             mult_noise[sparse<sparse_level] = 1.0
 
             
