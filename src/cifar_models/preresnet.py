@@ -56,7 +56,51 @@ class PreActBottleneck(nn.Module):
         out = self.conv3(F.relu(self.bn3(out)))
         out += shortcut
         return out
-    
+
+class VIT(nn.Module):
+    def __init__(self, vit: nn.Module, preprocessor, num_classes=10):
+        super().__init__()
+        self.vit = vit
+        self.preprocessor = preprocessor
+        self.classifier = nn.Linear(197 * 768, num_classes)
+
+
+    def forward(self, x, targets=None, jsd=0, mixup_alpha=0.0, manifold_mixup=0, 
+                add_noise_level=0.0, mult_noise_level=0.0, sparse_level=1.0, numpy_gen=None, torch_gen=None):
+        assert(not manifold_mixup)
+        if mixup_alpha > 0.0:
+            k = 0
+            if torch_gen is None:
+                torch_gen = torch.Generator(device='cuda')
+            if numpy_gen is None:
+                numpy_gen = np.random.default_rng()
+        else:
+            k = -1
+
+        if mixup_alpha > 0.0 and manifold_mixup == True: 
+            k = numpy_gen.choice(range(len(self.blocks)), 1)[0]
+        if k == 0: # Do input mixup if k is 0 
+          # Clone is necessary for KD because otherwise the original images are modified in place!
+          x, targets_a, targets_b, lam = do_noisy_mixup(x.clone(), targets, numpy_gen, torch_gen, jsd=jsd, alpha=mixup_alpha, 
+                                              add_noise_level=add_noise_level, 
+                                              mult_noise_level=mult_noise_level,
+                                              sparse_level=sparse_level)
+        
+        x = ((x + 1.0) / 2).clamp(0.0, 1.0)
+        # print(x)
+        inputs = self.preprocessor(images=x, return_tensors="pt", do_normalize=False, do_rescale=False).to(x.device)
+        outputs = self.vit(**inputs)
+        out = outputs.last_hidden_state
+        out = out.view(out.size(0), -1)
+        out = self.classifier(out)
+        
+        if mixup_alpha > 0.0:
+            return out, targets_a, targets_b, lam
+        else:
+            return out
+
+
+
 class ResNetBase(nn.Module):
     def __init__(self):
         super().__init__()

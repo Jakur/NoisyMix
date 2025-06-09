@@ -13,9 +13,10 @@ import numpy as np
 import math
 import time
 import json
+import tqdm
 
-from src.cifar_models import preactwideresnet18, preactresnet18, wideresnet28, preactresnet20, preactresnet32
-from kd_utils import DistillKL, freeze
+from src.cifar_models import preactwideresnet18, preactresnet18, wideresnet28, preactresnet20, preactresnet32, VIT
+from kd_utils import dkd_loss, freeze
 
 
 import torch
@@ -32,11 +33,12 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--dataset', type=str, default='cifar10',
                     choices=['cifar10', 'cifar100'], help='Choose between CIFAR-10, CIFAR-100.')
 parser.add_argument('--arch', '-m', type=str, default='preactresnet18',
-                    choices=['preactresnet18', 'preactwideresnet18', 'wideresnet28', 'preactresnet20', 'preactresnet32'], help='Choose architecture.')
+                    choices=['preactresnet18', 'preactwideresnet18', 'wideresnet28', 'preactresnet20', 'preactresnet32', 'vit'], help='Choose architecture.')
 parser.add_argument('--seed', type=int, default=1,
                     metavar='S', help='random seed (default: 0)')
 parser.add_argument('--workers', type=int, default=4,
                     help="Number of workers for PyTorch DataLoaders")
+parser.add_argument('--tqdm', action='store_true', help="Enable Progress Bar")
 
 # Optimization options
 parser.add_argument('--epochs', '-e', type=int, default=200,
@@ -49,6 +51,7 @@ parser.add_argument('--test-batch-size', type=int, default=1000)
 parser.add_argument('--momentum', type=float, default=0.9, help='Momentum.')
 parser.add_argument('--decay', '-wd', type=float,
                     default=0.0005, help='Weight decay (L2 penalty).')
+parser.add_argument('--grad-steps', type=int, default=1, help="Number of steps for gradient accumulation. 1 for normal training")
 
 # AugMix options
 parser.add_argument('--augmix', type=int, default=1,
@@ -80,12 +83,18 @@ parser.add_argument('--sparse_level', type=float,
 # Distillation
 parser.add_argument('--distill', action='store_true',
                     help="Enable distillation")
+parser.add_argument('--dkd', action='store_true',
+                    help="Enable DKD Loss in place of JSD Loss")
+parser.add_argument('--dkd_alpha', type=float, default=1.0,
+                    help="DKD alpha parameter")
+parser.add_argument('--dkd_beta', type=float, default=8.0,
+                    help="DKD beta parameter")
 parser.add_argument('--teacher-path', type=str,
                     help="Path to PyTorch saved model")
 parser.add_argument('--kd_alpha', '-a', type=float, default=0.0,
                     help="Final weight for Standard KD (0-1)")
 parser.add_argument('--kd_schedule', type=str,
-                    default="linear", choices=["linear", "log", "cos"])
+                    default="linear", choices=["linear", "log", "cos", "const"])
 parser.add_argument('--kd_temp', type=float, default=4.0,
                     help="Temperature parameter for knowledge distillation")
 
@@ -100,7 +109,6 @@ if args.seed != 0:
 else:
     numpy_rng = np.random.default_rng()
     torch_rng = torch.Generator(device="cuda")
-
 
 def logarithmic_param_schedule(epoch, total_epochs, start, end):
     if epoch <= 0:
@@ -134,6 +142,9 @@ if args.distill:
     elif args.kd_schedule == "cos":
         print("Cosine KD Scaling")
         kd_schedule = cosine_param_schedule
+    elif args.kd_schedule == "const":
+        print("Constant KD Scaling")
+        kd_schedule = lambda _a, _b, _c, d: d 
     else:
         print("Linear KD Scaling")
         kd_schedule = linear_param_schedule
@@ -157,9 +168,9 @@ def train(net, train_loader, optimizer, scheduler, epoch=0):
     loss_ema = 0.
 
     criterion = torch.nn.CrossEntropyLoss().cuda()
-
-    for i, (images, targets) in enumerate(train_loader):
-        optimizer.zero_grad()
+    pbar = tqdm.tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch}", disable=not args.tqdm)
+    optimizer.zero_grad()
+    for i, (images, targets) in pbar:
 
         if args.jsd == 0:
             images = images.cuda()
@@ -245,19 +256,35 @@ def train(net, train_loader, optimizer, scheduler, epoch=0):
                     torch.clamp((p_clean + p_aug1 + p_aug2) /
                                 3., 1e-7, 1).log()
             else:
-                
                 p_mixture = torch.clamp(
                     (p_clean + p_aug1 + p_aug2) / 3., 1e-7, 1).log()
-
-            loss += 12 * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
-                          F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
-                          F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
+            if args.dkd:
+                if lam > 0.5:
+                    proxy_target = t_targets_a
+                else:
+                    proxy_target = t_targets_b
+                # for val in [p_clean, p_aug1, p_aug2]:
+                loss += dkd_loss(logits_clean, p_mixture.detach(), proxy_target, args.dkd_alpha, 
+                                 args.dkd_beta, args.kd_temp) / 3.0
+                loss += dkd_loss(logits_aug1, p_mixture.detach(), proxy_target, args.dkd_alpha, 
+                                 args.dkd_beta, args.kd_temp) / 3.0
+                loss += dkd_loss(logits_aug2, p_mixture.detach(), proxy_target, args.dkd_alpha, 
+                                 args.dkd_beta, args.kd_temp) / 3.0
+            else:
+                loss += 12 * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
+                            F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
+                            F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
             # loss = args.kd_alpha * kd_loss + args.reward * loss
-
+        loss /= args.grad_steps
         loss.backward()
-        optimizer.step()
+        if i % args.grad_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
         scheduler.step()
+
         loss_ema = loss_ema * 0.9 + float(loss) * 0.1
+        pbar.set_postfix_str(f"Train Loss: {loss_ema:.3f}")
+    
     return loss_ema
 
 
@@ -336,6 +363,11 @@ def main():
         net = preactresnet20(num_classes=num_classes)
     elif args.arch == "preactresnet32":
         net = preactresnet32(num_classes=num_classes)
+    elif args.arch == "vit":
+        from transformers import ViTImageProcessor, ViTModel
+        processor = ViTImageProcessor.from_pretrained('google/vit-base-patch16-224-in21k')
+        net = VIT(ViTModel.from_pretrained('google/vit-base-patch16-224-in21k').cuda(), processor, num_classes=num_classes)
+        # inputs = processor(images=data, return_tensors="pt", do_normalize=False, do_rescale=False)
 
     optimizer = torch.optim.SGD(net.parameters(),
                                 args.learning_rate, momentum=args.momentum,
