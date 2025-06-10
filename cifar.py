@@ -159,7 +159,7 @@ def get_mix(logits_all, num_images):
             t_logits_aug2, dim=1)
     t_p_mixture = torch.clamp(
         (t_p_clean + t_p_aug1 + t_p_aug2) / 3., 1e-7, 1).log()
-    return t_p_mixture
+    return t_p_mixture, t_logits_clean
 
 
 def train(net, train_loader, optimizer, scheduler, epoch=0):
@@ -236,7 +236,7 @@ def train(net, train_loader, optimizer, scheduler, epoch=0):
                                                                                     mult_noise_level=args.mult_noise_level,
                                                                                     sparse_level=args.sparse_level)
 
-                    t_p_mixture = get_mix(t_logits_all, num_images)
+                    t_p_mixture, t_logits_clean = get_mix(t_logits_all, num_images)
                 # with torch.no_grad():
                 #   if args.alpha != 0:
                 #     assert(torch.allclose(t_targets_a, targets_a))
@@ -263,17 +263,13 @@ def train(net, train_loader, optimizer, scheduler, epoch=0):
                     proxy_target = t_targets_a
                 else:
                     proxy_target = t_targets_b
-                # for val in [p_clean, p_aug1, p_aug2]:
-                loss += dkd_loss(logits_clean, p_mixture.detach(), proxy_target, args.dkd_alpha, 
-                                 args.dkd_beta, args.kd_temp) / 3.0
-                loss += dkd_loss(logits_aug1, p_mixture.detach(), proxy_target, args.dkd_alpha, 
-                                 args.dkd_beta, args.kd_temp) / 3.0
-                loss += dkd_loss(logits_aug2, p_mixture.detach(), proxy_target, args.dkd_alpha, 
-                                 args.dkd_beta, args.kd_temp) / 3.0
-            else:
-                loss += 12 * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
-                            F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
-                            F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
+                dkd = dkd_loss(logits_clean, t_logits_clean, proxy_target, args.dkd_alpha, 
+                                 args.dkd_beta, args.kd_temp)
+                loss += dkd
+                
+            loss += 12 * (F.kl_div(p_mixture, p_clean, reduction='batchmean') +
+                        F.kl_div(p_mixture, p_aug1, reduction='batchmean') +
+                        F.kl_div(p_mixture, p_aug2, reduction='batchmean')) / 3.
             # loss = args.kd_alpha * kd_loss + args.reward * loss
         loss /= args.grad_steps
         loss.backward()
