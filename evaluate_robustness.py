@@ -10,6 +10,7 @@ import collections
 from src.get_data import NOISE_TYPES, SEVERITIES
 from src.get_data import getData
 
+from src.cifar_models import Ensemble
 from torch import nn
 from torch.nn import functional as F
 
@@ -112,23 +113,32 @@ def get_parameter_count(model: torch.nn.Module):
     return total
 
 
-def evaluate(folder, dataset, save_dir):
+def evaluate(folder, dataset, save_dir, ensemble=False):
 
     datasetc = dataset + str("c")
     os.makedirs(os.path.join(save_dir, datasetc), exist_ok=True)
 
-    models = [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))]
+    models = [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f)) and str(f).endswith(".pt")]
     models = sorted(models)
     print(models)
 
     results = collections.defaultdict(dict)
     _, test_loader_clean = getData(name=dataset, train_bs=128, test_bs=1024)
 
+    if ensemble:
+        data = [torch.load(folder + m).eval() for m in models]
+        models = [Ensemble(data)]
+        torch.save(models[0], f"{folder}/ensemble.pt")
+
     for index, m in enumerate(models):
-        model = torch.load(folder + m)
-        print(m)
-        model.eval()
-        print(f"Number of Parameters: {get_parameter_count(model)}")
+        if ensemble:
+            model = m 
+            m = folder.strip("/").split("/")[-1]
+        else:
+            model = torch.load(folder + m)
+            print(m)
+            model.eval()
+            print(f"Number of Parameters: {get_parameter_count(model)}")
         
         # Clean Accuracy
         clean_test_acc = cls_validate(test_loader_clean, model, time_begin=None)
@@ -173,10 +183,11 @@ if __name__ == '__main__':
     parser.add_argument("--dir", type=str, default='cifar10_models/', required=False, help='model dir')
     parser.add_argument("--dataset", type=str, default='cifar10', required=False, help='dataset')
     parser.add_argument("--batch_size", default=1000, type=int, help='batch size')
+    parser.add_argument("--ensemble", type=int, default=0, help="Ensemble models in folder")
     args = parser.parse_args()
 
     test_batch_size = args.batch_size
     os.makedirs('eval_results', exist_ok=True)
-    evaluate(args.dir, args.dataset, 'eval_results')
+    evaluate(args.dir, args.dataset, 'eval_results', ensemble=args.ensemble != 0)
 
 

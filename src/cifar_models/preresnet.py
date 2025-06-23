@@ -156,7 +156,50 @@ class ResNetBase(nn.Module):
             return out, targets_a, targets_b, lam
         else:
             return out
-    
+
+# class Ensemble(nn.Module):
+#     def __init__(self, models: list[nn.Module]):
+#         super().__init__()
+#         self.models = nn.ModuleList(models)
+
+#     def forward(self, x, **kwargs):
+#         soft = nn.Softmax(dim=1)
+#         data = []
+#         probs = []
+#         for model in self.models:
+#             output = model(x, **kwargs)
+#             if isinstance(output, tuple):
+#                 data.append(output[0])
+#             else:
+#                 data.append(output)
+            
+#             probs.append(soft(data[-1]))
+            
+#         offset = data[0][0] - torch.log(probs[0][0])
+#         probs = torch.stack(probs, dim=0)
+#         average = torch.mean(probs, dim=0)
+#         average = torch.log(average) + offset
+#         # Average Probs 
+#         return average
+
+class Ensemble(nn.Module):
+    def __init__(self, models: list[nn.Module]):
+        super().__init__()
+        self.models = nn.ModuleList(models)
+
+    def forward(self, x, **kwargs):
+        data = []
+        for model in self.models:
+            output = model(x, **kwargs)
+            if isinstance(output, tuple):
+                data.append(output[0])
+            else:
+                data.append(output)
+        data = torch.stack(data, dim=0)
+        average = torch.mean(data, dim=0)
+        # Average logits 
+        return average
+        
 
 class PreActResNet(ResNetBase):
     def __init__(self, block, num_blocks, num_classes=10, width=1):
@@ -212,4 +255,3 @@ def test():
     net = PreActResNet18()
     y = net(torch.randn(1,3,32,32))
     print(y.size())
-
